@@ -1,0 +1,91 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!-- 雷雳桥接网络系统服务配置 -->
+    <!-- 提供系统启动时自动配置和监控网络状态的功能 -->
+
+    <key>Label</key>
+    <string>com.thunderbolt.bridge</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/usr/local/bin/thunderbolt/bridge_repair.sh</string>
+    </array>
+
+    <!-- 系统启动时自动运行 -->
+    <key>RunAtLoad</key>
+    <true/>
+
+    <!-- 以root权限运行 -->
+    <key>UserName</key>
+    <string>root</string>
+
+    <!-- 进程退出后自动重启 -->
+    <key>KeepAlive</key>
+    <dict>
+        <!-- 只有在异常退出时才重启 -->
+        <key>SuccessfulExit</key>
+        <false/>
+        <!-- 进程崩溃时重启 -->
+        <key>Crashed</key>
+        <true/>
+    </dict>
+
+    <!-- 网络变化时触发 -->
+    <key>WatchPaths</key>
+    <array>
+        <string>/var/run/resolv.conf</string>
+        <string>/Library/Preferences/SystemConfiguration/NetworkInterfaces.plist</string>
+    </array>
+
+    <!-- 定期检查网络状态（每5分钟） -->
+    <key>StartInterval</key>
+    <integer>300</integer>
+
+    <!-- 标准输出和错误日志 -->
+    <key>StandardOutPath</key>
+    <string>/var/log/thunderbolt_bridge_daemon.log</string>
+
+    <key>StandardErrorPath</key>
+    <string>/var/log/thunderbolt_bridge_daemon.log</string>
+
+    <!-- 工作目录 -->
+    <key>WorkingDirectory</key>
+    <string>/usr/local/bin/thunderbolt</string>
+
+    <!-- 环境变量 -->
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    </dict>
+
+    <!-- 进程限制 -->
+    <key>SoftResourceLimits</key>
+    <dict>
+        <!-- 限制CPU使用时间 -->
+        <key>CPU</key>
+        <integer>60</integer>
+        <!-- 限制内存使用 -->
+        <key>ResidentSetSize</key>
+        <integer>52428800</integer> <!-- 50MB -->
+    </dict>
+
+    <!-- 启动延迟（等待系统完全启动） -->
+    <key>StartOnMount</key>
+    <true/>
+
+    <!-- 退出超时 -->
+    <key>ExitTimeOut</key>
+    <integer>30</integer>
+
+    <!-- 防止频繁重启 -->
+    <key>ThrottleInterval</key>
+    <integer>60</integer>
+
+    <!-- 系统睡眠唤醒时运行 -->
+    <key>StartOnMount</key>
+    <true/>
+</dict>
+</plist>
