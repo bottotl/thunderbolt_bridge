@@ -79,9 +79,11 @@ sudo ./client_network_setup.sh
 
 - **物理连接**: 雷雳线缆连接两台Mac
 - **逻辑网络**: 192.168.200.0/24网段
-- **主机配置**: bridge0接口作为网关，WiFi接口提供internet连接
-- **NAT转发**: 通过pfctl实现192.168.200.0/24到WiFi接口的NAT转发
+- **主机配置**: bridge0接口作为网关
+- **互联网共享**: 优先使用有线网卡（以太网），如无活跃有线连接则使用WiFi
+- **NAT转发**: 通过pfctl实现192.168.200.0/24到互联网接口的NAT转发
 - **桥接成员**: en1/en2接口作为bridge0的成员接口
+- **智能选择**: 自动检测活跃的网络接口（有线优先级高于无线）
 
 ## 问题解决方案
 
@@ -137,3 +139,4 @@ tail -f /var/log/thunderbolt_bridge.log
 - **v2.1**: 系统服务集成 (install_daemon.sh, com.thunderbolt.bridge.plist)
 - **v2.2**: 高级监控工具 (bridge_monitor.sh)
 - **v2.3**: 用户体验优化，引导升级到持久化方案
+- **v2.4**: 智能网卡选择，优先使用有线网卡（以太网）共享网络

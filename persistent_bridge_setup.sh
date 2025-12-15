@@ -115,31 +115,85 @@ ifconfig en2 up 2>/dev/null || true
 # 第三步：创建持久化NAT规则
 echo "3. 创建持久化NAT规则..."
 
-# 获取WiFi接口名称
-WIFI_INTERFACE=$(networksetup -listallhardwareports | awk '/Wi-Fi/{getline; print $2}')
-if [[ -z "$WIFI_INTERFACE" ]]; then
-    WIFI_INTERFACE="en0"
-    log_message "警告: 未检测到WiFi接口，使用默认值 en0"
+# 优先获取有线网卡接口，如果没有则使用WiFi
+INTERNET_INTERFACE=""
+INTERFACE_TYPE=""
+INTERFACE_NAME=""
+
+# 先检测所有类型的有线网卡接口
+# 支持：Ethernet、以太网、USB LAN、Thunderbolt Ethernet等
+echo "正在检测有线网卡..."
+
+# 保存到临时文件避免管道子shell问题
+TEMP_PORTS_FILE="/tmp/network_ports_$$.txt"
+networksetup -listallhardwareports > "$TEMP_PORTS_FILE"
+
+# 逐行读取并检测
+while IFS= read -r line; do
+    if [[ "$line" =~ ^Hardware\ Port:\ (.+)$ ]]; then
+        port_name="${BASH_REMATCH[1]}"
+        # 排除无线和虚拟接口
+        if [[ ! "$port_name" =~ (Wi-Fi|Bluetooth|雷雳网桥|Thunderbolt Bridge|Thunderbolt [0-9]) ]]; then
+            # 读取下一行获取设备名
+            read -r device_line
+            if [[ "$device_line" =~ Device:\ (.+)$ ]]; then
+                device="${BASH_REMATCH[1]}"
+                # 检查接口是否活跃
+                if ifconfig "$device" 2>/dev/null | grep -q "status: active"; then
+                    INTERNET_INTERFACE="$device"
+                    INTERFACE_NAME="$port_name"
+                    INTERFACE_TYPE="以太网(有线)"
+                    log_message "检测到活跃的有线网卡: $INTERNET_INTERFACE ($INTERFACE_NAME)"
+                    echo "✅ 检测到活跃的有线网卡: $INTERNET_INTERFACE ($INTERFACE_NAME)"
+                    break
+                fi
+            fi
+        fi
+    fi
+done < "$TEMP_PORTS_FILE"
+
+# 清理临时文件
+rm -f "$TEMP_PORTS_FILE"
+
+# 如果没有找到活跃的有线网卡，使用WiFi
+if [[ -z "$INTERNET_INTERFACE" ]]; then
+    WIFI_INTERFACE=$(networksetup -listallhardwareports | awk '/Wi-Fi/{getline; print $2}')
+    if [[ -n "$WIFI_INTERFACE" ]]; then
+        INTERNET_INTERFACE="$WIFI_INTERFACE"
+        INTERFACE_NAME="Wi-Fi"
+        INTERFACE_TYPE="WiFi(无线)"
+        log_message "未检测到活跃的有线网卡，使用WiFi接口: $INTERNET_INTERFACE"
+        echo "ℹ️  未检测到活跃的有线网卡，使用WiFi接口: $INTERNET_INTERFACE"
+    else
+        # 都没有，使用默认值
+        INTERNET_INTERFACE="en0"
+        INTERFACE_NAME="默认接口"
+        INTERFACE_TYPE="默认"
+        log_message "警告: 未检测到有线或WiFi接口，使用默认值 en0"
+        echo "⚠️  警告: 未检测到有线或WiFi接口，使用默认值 en0"
+    fi
 fi
-log_message "检测到WiFi接口: $WIFI_INTERFACE"
-echo "检测到WiFi接口: $WIFI_INTERFACE"
+
+log_message "最终选择的互联网接口: $INTERNET_INTERFACE ($INTERFACE_NAME, $INTERFACE_TYPE)"
+echo "🌐 共享网络接口: $INTERNET_INTERFACE ($INTERFACE_NAME)"
 
 # 创建持久化NAT规则文件
 cat > "$ANCHOR_FILE" << EOF
 # 雷雳桥接网络NAT规则 - 持久化配置
 # 生成时间: $(date)
+# 共享接口: $INTERNET_INTERFACE ($INTERFACE_TYPE)
 
-# NAT规则：将192.168.200.0/24网段的流量通过WiFi接口转发
-nat on $WIFI_INTERFACE from 192.168.200.0/24 to any -> ($WIFI_INTERFACE)
+# NAT规则：将192.168.200.0/24网段的流量通过互联网接口转发
+nat on $INTERNET_INTERFACE from 192.168.200.0/24 to any -> ($INTERNET_INTERFACE)
 
 # 允许从桥接接口进入的流量（与临时脚本保持一致）
 pass in on bridge0 from 192.168.200.0/24 to any keep state
 
-# 允许通过WiFi接口出去的流量
-pass out on $WIFI_INTERFACE from 192.168.200.0/24 to any keep state
+# 允许通过互联网接口出去的流量
+pass out on $INTERNET_INTERFACE from 192.168.200.0/24 to any keep state
 
 # 允许返回的流量
-pass in on $WIFI_INTERFACE to 192.168.200.0/24 keep state
+pass in on $INTERNET_INTERFACE to 192.168.200.0/24 keep state
 pass out on bridge0 to 192.168.200.0/24 keep state
 
 # 允许客户端访问主机本地服务（解决.local域名访问问题）

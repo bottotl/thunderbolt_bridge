@@ -183,11 +183,34 @@ check_connectivity() {
     return 1
 }
 
-# 检查WiFi连接状态
-check_wifi_status() {
+# 检查互联网连接状态（优先检查有线，其次WiFi）
+check_internet_status() {
+    # 先检测所有类型的有线网卡接口
+    # 支持：Ethernet、以太网、USB LAN、Thunderbolt Ethernet等
+    local has_active_ethernet=false
+    networksetup -listallhardwareports | while IFS= read -r line; do
+        if [[ "$line" =~ ^Hardware\ Port:\ (.+)$ ]]; then
+            local port_name="${BASH_REMATCH[1]}"
+            # 排除无线和虚拟接口
+            if [[ ! "$port_name" =~ (Wi-Fi|Bluetooth|雷雳网桥|Thunderbolt Bridge|Thunderbolt [0-9]) ]]; then
+                # 读取下一行获取设备名
+                read -r device_line
+                if [[ "$device_line" =~ Device:\ (.+)$ ]]; then
+                    local device="${BASH_REMATCH[1]}"
+                    # 检查接口是否活跃
+                    if ifconfig "$device" 2>/dev/null | grep -q "status: active"; then
+                        echo "found"
+                        break
+                    fi
+                fi
+            fi
+        fi
+    done | grep -q "found" && return 0
+
+    # 如果没有活跃的有线网卡，检查WiFi
     local wifi_interface=$(networksetup -listallhardwareports | awk '/Wi-Fi/{getline; print $2}')
     if [[ -n "$wifi_interface" ]]; then
-        local wifi_status=$(ifconfig "$wifi_interface" | grep "status:" | awk '{print $2}')
+        local wifi_status=$(ifconfig "$wifi_interface" 2>/dev/null | grep "status:" | awk '{print $2}')
         if [[ "$wifi_status" == "active" ]]; then
             return 0
         fi
@@ -242,13 +265,13 @@ perform_health_check() {
         ((issues++))
     fi
 
-    # 5. 检查WiFi连接
-    if check_wifi_status; then
-        print_status "OK" "WiFi连接正常"
-        status_report+="[✅] WiFi连接\n"
+    # 5. 检查互联网连接（有线优先）
+    if check_internet_status; then
+        print_status "OK" "互联网连接正常"
+        status_report+="[✅] 互联网连接\n"
     else
-        print_status "WARN" "WiFi连接异常"
-        status_report+="[⚠️] WiFi连接\n"
+        print_status "WARN" "互联网连接异常"
+        status_report+="[⚠️] 互联网连接\n"
     fi
 
     # 6. 检查网络连通性
