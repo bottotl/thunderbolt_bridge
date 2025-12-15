@@ -34,10 +34,10 @@ cleanup() {
 }
 trap cleanup EXIT
 
+check_permissions
+
 echo "=== 雷雳桥接网络持久化配置 ==="
 log_message "开始雷雳桥接网络持久化配置"
-
-check_permissions
 create_lock
 
 # 检查是否已经配置
@@ -85,6 +85,33 @@ log_message "启用雷雳网桥服务"
 echo "等待网络配置生效..."
 sleep 3
 
+# 额外：重置桥接成员接口，使行为与临时脚本一致
+echo "重置桥接成员接口(en1/en2)状态..."
+if ifconfig en1 inet 0.0.0.0 down 2>/dev/null; then
+    echo "已清除 en1 的IP配置"
+else
+    echo "en1 不存在或已清除"
+fi
+if ifconfig en2 inet 0.0.0.0 down 2>/dev/null; then
+    echo "已清除 en2 的IP配置"
+else
+    echo "en2 不存在或已清除"
+fi
+
+echo "重启 bridge0 接口..."
+if ifconfig bridge0 down 2>/dev/null; then
+    sleep 1
+    ifconfig bridge0 up 2>/dev/null || true
+fi
+
+echo "重新激活桥接成员接口..."
+ifconfig en1 down 2>/dev/null || true
+sleep 1
+ifconfig en1 up 2>/dev/null || true
+ifconfig en2 down 2>/dev/null || true
+sleep 1
+ifconfig en2 up 2>/dev/null || true
+
 # 第三步：创建持久化NAT规则
 echo "3. 创建持久化NAT规则..."
 
@@ -105,15 +132,17 @@ cat > "$ANCHOR_FILE" << EOF
 # NAT规则：将192.168.200.0/24网段的流量通过WiFi接口转发
 nat on $WIFI_INTERFACE from 192.168.200.0/24 to any -> ($WIFI_INTERFACE)
 
-# 允许转发流量的规则
+# 允许从桥接接口进入的流量（与临时脚本保持一致）
 pass in on bridge0 from 192.168.200.0/24 to any keep state
+
+# 允许通过WiFi接口出去的流量
 pass out on $WIFI_INTERFACE from 192.168.200.0/24 to any keep state
 
 # 允许返回的流量
 pass in on $WIFI_INTERFACE to 192.168.200.0/24 keep state
 pass out on bridge0 to 192.168.200.0/24 keep state
 
-# 允许客户端访问主机本地服务
+# 允许客户端访问主机本地服务（解决.local域名访问问题）
 pass in on bridge0 from 192.168.200.0/24 to 192.168.200.1 keep state
 pass out on bridge0 from 192.168.200.1 to 192.168.200.0/24 keep state
 
@@ -128,6 +157,10 @@ pass in on bridge0 proto tcp from 192.168.200.0/24 to any port 53 keep state
 # 允许ICMP（ping）
 pass inet proto icmp from 192.168.200.0/24 to any keep state
 pass inet proto icmp from any to 192.168.200.0/24 keep state
+
+# 允许桥接接口所有流量（与临时脚本一致，保证通畅）
+pass in on bridge0 all
+pass out on bridge0 all
 EOF
 
 log_message "创建持久化NAT规则文件: $ANCHOR_FILE"

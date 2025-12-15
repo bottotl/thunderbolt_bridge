@@ -1,7 +1,26 @@
 #!/bin/bash
-# 雷雳桥接网络修复脚本 - 修复桥接配置问题
+# 雷雳桥接网络配置脚本 - 主机端
+# 优化版本：支持持久化配置，减少重复执行需求
 
-echo "=== 开始修复雷雳桥接网络 ==="
+echo "=== 雷雳桥接网络配置 (优化版) ==="
+echo ""
+echo "🔄 此脚本现在支持："
+echo "• 持久化网络配置"
+echo "• 自动修复功能"
+echo "• 系统服务监控"
+echo ""
+echo "💡 建议使用新的持久化配置脚本："
+echo "sudo ./persistent_bridge_setup.sh"
+echo ""
+echo "是否继续使用此脚本？(y/N): "
+read -r response
+if [[ ! "$response" =~ ^[Yy]$ ]]; then
+    echo "退出脚本。建议运行: sudo ./persistent_bridge_setup.sh"
+    exit 0
+fi
+
+echo ""
+echo "=== 开始雷雳桥接网络临时配置 ==="
 
 # 检查当前状态
 echo "0. 检查当前网络状态..."
@@ -74,6 +93,14 @@ pass out on $WIFI_INTERFACE from 192.168.200.0/24 to any
 pass in on $WIFI_INTERFACE to 192.168.200.0/24
 pass out on bridge0 to 192.168.200.0/24
 
+# 允许客户端访问主机本地服务（解决.local域名访问问题）
+pass in on bridge0 from 192.168.200.0/24 to 192.168.200.1
+pass out on bridge0 from 192.168.200.1 to 192.168.200.0/24
+
+# 允许mDNS流量（支持.local域名解析）
+pass in on bridge0 proto udp from any to any port 5353
+pass out on bridge0 proto udp from any to any port 5353
+
 # 允许转发流量
 pass in on bridge0 all
 pass out on bridge0 all
@@ -114,7 +141,9 @@ echo "桥接接口状态:"
 ifconfig bridge0 | grep -E "(flags|inet|status|member)"
 
 echo ""
-echo "=== 雷雳桥接网络修复完成! ==="
+echo "=== 雷雳桥接网络临时配置完成! ==="
+echo ""
+echo "⚠️  重要提醒: 此配置为临时配置，重启后会丢失"
 echo ""
 echo "6. 测试连接..."
 # 测试桥接网络
@@ -122,26 +151,44 @@ echo "测试桥接网络本地连通性:"
 ping -c 3 192.168.200.1 2>/dev/null && echo "✅ 桥接网络正常" || echo "❌ 桥接网络异常"
 
 echo ""
-echo "🔧 故障排除提示:"
-echo "如果问题仍然存在："
-echo "1. 检查雷雳线缆连接"
-echo "2. 重启两台Mac"
-echo "3. 重新运行此脚本"
+echo "🔧 避免频繁重复执行的解决方案:"
+echo ""
+echo "1. 🚀 推荐: 使用持久化配置脚本"
+echo "   sudo ./persistent_bridge_setup.sh"
+echo "   • 配置在重启后自动保持"
+echo "   • 包含自动修复功能"
+echo "   • 减少手动干预需求"
+echo ""
+echo "2. 📊 安装系统监控服务"
+echo "   sudo ./install_daemon.sh"
+echo "   • 系统启动时自动配置"
+echo "   • 网络异常时自动修复"
+echo "   • 定期健康检查"
+echo ""
+echo "3. 🔍 手动监控网络状态"
+echo "   sudo ./bridge_monitor.sh --monitor"
+echo "   • 实时监控网络状态"
+echo "   • 自动检测和修复问题"
 echo ""
 echo "📝 另一台Mac配置说明:"
 echo "在连接的Mac上执行："
+echo "  sudo ./client_network_setup.sh"
+echo ""
+echo "或手动配置："
 echo "  系统偏好设置 → 网络 → 雷雳网桥"
 echo "  - IP地址: 192.168.200.2"
 echo "  - 子网掩码: 255.255.255.0"
 echo "  - 路由器: 192.168.200.1"
 echo "  - DNS: 8.8.8.8, 1.1.1.1"
 echo ""
-echo "或使用命令行:"
-echo "  sudo networksetup -setmanual \"雷雳网桥\" 192.168.200.2 255.255.255.0 192.168.200.1"
-echo "  sudo networksetup -setdnsservers \"雷雳网桥\" 8.8.8.8 1.1.1.1"
+echo "🎯 当前配置特点（临时）："
+echo "- ✅ 清除了en1/en2的IP配置冲突"
+echo "- ✅ 重新激活了桥接成员接口"
+echo "- ✅ 修正了NAT规则使用bridge0接口"
+echo "- ✅ 启用了IP转发功能"
+echo "- ✅ 添加了本地服务访问支持"
+echo "- ✅ 启用了mDNS流量转发"
+echo "- ⚠️  重启后需要重新执行"
 echo ""
-echo "🎯 核心修复："
-echo "- 清除了en1/en2的IP配置冲突"
-echo "- 重新激活了桥接成员接口"
-echo "- 修正了NAT规则使用bridge0接口"
-echo "- 启用了IP转发功能"
+echo "💡 为了获得最佳体验，建议运行持久化配置："
+echo "sudo ./persistent_bridge_setup.sh"
