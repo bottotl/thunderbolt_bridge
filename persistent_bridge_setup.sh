@@ -115,20 +115,21 @@ ifconfig en2 up 2>/dev/null || true
 # 第三步：创建持久化NAT规则
 echo "3. 创建持久化NAT规则..."
 
-# 优先获取有线网卡接口，如果没有则使用WiFi
-INTERNET_INTERFACE=""
-INTERFACE_TYPE=""
-INTERFACE_NAME=""
+# 检测所有可用的互联网接口（有线、WiFi、USB网卡）
+declare -a INTERNET_INTERFACES=()
+declare -a INTERFACE_NAMES=()
+declare -a INTERFACE_TYPES=()
 
-# 先检测所有类型的有线网卡接口
-# 支持：Ethernet、以太网、USB LAN、Thunderbolt Ethernet等
-echo "正在检测有线网卡..."
+echo "正在检测所有可用的网络接口..."
 
 # 保存到临时文件避免管道子shell问题
 TEMP_PORTS_FILE="/tmp/network_ports_$$.txt"
 networksetup -listallhardwareports > "$TEMP_PORTS_FILE"
 
-# 逐行读取并检测
+# 先检测所有类型的有线网卡接口（包括USB网卡）
+# 支持：Ethernet、以太网、USB LAN、Thunderbolt Ethernet等
+echo "检测有线/USB网卡..."
+
 while IFS= read -r line; do
     if [[ "$line" =~ ^Hardware\ Port:\ (.+)$ ]]; then
         port_name="${BASH_REMATCH[1]}"
@@ -138,62 +139,112 @@ while IFS= read -r line; do
             read -r device_line
             if [[ "$device_line" =~ Device:\ (.+)$ ]]; then
                 device="${BASH_REMATCH[1]}"
-                # 检查接口是否活跃
+                # 检查接口是否活跃并有IP地址
                 if ifconfig "$device" 2>/dev/null | grep -q "status: active"; then
-                    INTERNET_INTERFACE="$device"
-                    INTERFACE_NAME="$port_name"
-                    INTERFACE_TYPE="以太网(有线)"
-                    log_message "检测到活跃的有线网卡: $INTERNET_INTERFACE ($INTERFACE_NAME)"
-                    echo "✅ 检测到活跃的有线网卡: $INTERNET_INTERFACE ($INTERFACE_NAME)"
-                    break
+                    # 检查是否有有效的IP地址（排除169.254开头的自动配置地址）
+                    if ifconfig "$device" 2>/dev/null | grep "inet " | grep -v "169.254" >/dev/null; then
+                        INTERNET_INTERFACES+=("$device")
+                        INTERFACE_NAMES+=("$port_name")
+                        INTERFACE_TYPES+=("有线/USB")
+                        log_message "检测到活跃的有线/USB网卡: $device ($port_name)"
+                        echo "✅ 检测到活跃的有线/USB网卡: $device ($port_name)"
+                    fi
                 fi
             fi
         fi
     fi
 done < "$TEMP_PORTS_FILE"
 
-# 清理临时文件
-rm -f "$TEMP_PORTS_FILE"
-
-# 如果没有找到活跃的有线网卡，使用WiFi
-if [[ -z "$INTERNET_INTERFACE" ]]; then
-    WIFI_INTERFACE=$(networksetup -listallhardwareports | awk '/Wi-Fi/{getline; print $2}')
-    if [[ -n "$WIFI_INTERFACE" ]]; then
-        INTERNET_INTERFACE="$WIFI_INTERFACE"
-        INTERFACE_NAME="Wi-Fi"
-        INTERFACE_TYPE="WiFi(无线)"
-        log_message "未检测到活跃的有线网卡，使用WiFi接口: $INTERNET_INTERFACE"
-        echo "ℹ️  未检测到活跃的有线网卡，使用WiFi接口: $INTERNET_INTERFACE"
-    else
-        # 都没有，使用默认值
-        INTERNET_INTERFACE="en0"
-        INTERFACE_NAME="默认接口"
-        INTERFACE_TYPE="默认"
-        log_message "警告: 未检测到有线或WiFi接口，使用默认值 en0"
-        echo "⚠️  警告: 未检测到有线或WiFi接口，使用默认值 en0"
+# 检测WiFi接口
+echo "检测WiFi接口..."
+WIFI_INTERFACE=$(networksetup -listallhardwareports | awk '/Wi-Fi/{getline; print $2}')
+if [[ -n "$WIFI_INTERFACE" ]]; then
+    # 检查WiFi是否活跃并有有效IP
+    if ifconfig "$WIFI_INTERFACE" 2>/dev/null | grep -q "status: active"; then
+        if ifconfig "$WIFI_INTERFACE" 2>/dev/null | grep "inet " | grep -v "169.254" >/dev/null; then
+            INTERNET_INTERFACES+=("$WIFI_INTERFACE")
+            INTERFACE_NAMES+=("Wi-Fi")
+            INTERFACE_TYPES+=("无线")
+            log_message "检测到活跃的WiFi接口: $WIFI_INTERFACE"
+            echo "✅ 检测到活跃的WiFi接口: $WIFI_INTERFACE"
+        fi
     fi
 fi
 
-log_message "最终选择的互联网接口: $INTERNET_INTERFACE ($INTERFACE_NAME, $INTERFACE_TYPE)"
-echo "🌐 共享网络接口: $INTERNET_INTERFACE ($INTERFACE_NAME)"
+# 清理临时文件
+rm -f "$TEMP_PORTS_FILE"
+
+# 检查是否找到至少一个可用接口
+if [[ ${#INTERNET_INTERFACES[@]} -eq 0 ]]; then
+    log_message "错误: 未检测到任何活跃的网络接口"
+    echo "❌ 错误: 未检测到任何活跃的网络接口"
+    echo "请确保至少有一个网络接口（有线、USB或WiFi）已连接并获得IP地址"
+    exit 1
+fi
+
+# 输出检测到的所有接口
+echo ""
+echo "🌐 检测到 ${#INTERNET_INTERFACES[@]} 个可用的互联网接口:"
+for i in "${!INTERNET_INTERFACES[@]}"; do
+    log_message "接口 $((i+1)): ${INTERNET_INTERFACES[$i]} (${INTERFACE_NAMES[$i]}, ${INTERFACE_TYPES[$i]})"
+    echo "  [$((i+1))] ${INTERNET_INTERFACES[$i]} - ${INTERFACE_NAMES[$i]} (${INTERFACE_TYPES[$i]})"
+done
+echo ""
 
 # 创建持久化NAT规则文件
 cat > "$ANCHOR_FILE" << EOF
-# 雷雳桥接网络NAT规则 - 持久化配置
+# 雷雳桥接网络NAT规则 - 持久化配置（支持多接口）
 # 生成时间: $(date)
-# 共享接口: $INTERNET_INTERFACE ($INTERFACE_TYPE)
+# 共享接口数量: ${#INTERNET_INTERFACES[@]}
+EOF
 
-# NAT规则：将192.168.200.0/24网段的流量通过互联网接口转发
-nat on $INTERNET_INTERFACE from 192.168.200.0/24 to any -> ($INTERNET_INTERFACE)
+# 添加每个接口的详细信息到规则文件
+for i in "${!INTERNET_INTERFACES[@]}"; do
+    echo "# 接口 $((i+1)): ${INTERNET_INTERFACES[$i]} (${INTERFACE_NAMES[$i]}, ${INTERFACE_TYPES[$i]})" >> "$ANCHOR_FILE"
+done
 
-# 允许从桥接接口进入的流量（与临时脚本保持一致）
+cat >> "$ANCHOR_FILE" << 'EOF'
+
+# ========================================
+# NAT规则：为每个互联网接口创建NAT转发
+# ========================================
+EOF
+
+# 为每个检测到的接口创建NAT规则
+for interface in "${INTERNET_INTERFACES[@]}"; do
+    cat >> "$ANCHOR_FILE" << EOF
+# NAT规则 - $interface
+nat on $interface from 192.168.200.0/24 to any -> ($interface)
+
+EOF
+done
+
+cat >> "$ANCHOR_FILE" << 'EOF'
+# ========================================
+# 流量转发规则
+# ========================================
+
+# 允许从桥接接口进入的流量
 pass in on bridge0 from 192.168.200.0/24 to any keep state
 
-# 允许通过互联网接口出去的流量
-pass out on $INTERNET_INTERFACE from 192.168.200.0/24 to any keep state
+EOF
 
-# 允许返回的流量
-pass in on $INTERNET_INTERFACE to 192.168.200.0/24 keep state
+# 为每个接口添加出站和入站规则
+for interface in "${INTERNET_INTERFACES[@]}"; do
+    cat >> "$ANCHOR_FILE" << EOF
+# 流量规则 - $interface
+pass out on $interface from 192.168.200.0/24 to any keep state
+pass in on $interface to 192.168.200.0/24 keep state
+
+EOF
+done
+
+cat >> "$ANCHOR_FILE" << 'EOF'
+# ========================================
+# 桥接接口规则
+# ========================================
+
+# 允许返回流量到桥接接口
 pass out on bridge0 to 192.168.200.0/24 keep state
 
 # 允许客户端访问主机本地服务（解决.local域名访问问题）
@@ -212,7 +263,7 @@ pass in on bridge0 proto tcp from 192.168.200.0/24 to any port 53 keep state
 pass inet proto icmp from 192.168.200.0/24 to any keep state
 pass inet proto icmp from any to 192.168.200.0/24 keep state
 
-# 允许桥接接口所有流量（与临时脚本一致，保证通畅）
+# 允许桥接接口所有流量（保证通畅）
 pass in on bridge0 all
 pass out on bridge0 all
 EOF
@@ -317,12 +368,61 @@ echo "7. 创建自动修复脚本..."
 
 cat > /usr/local/bin/thunderbolt/bridge_repair.sh << 'EOF'
 #!/bin/bash
-# 雷雳桥接网络自动修复脚本
+# 雷雳桥接网络自动修复脚本（支持多接口）
 
 LOG_FILE="/var/log/thunderbolt_bridge.log"
 
 log_message() {
     echo "$(date '+%Y-%m-%d %H:%M:%S') - $1" >> "$LOG_FILE"
+}
+
+# 检测所有可用的互联网接口
+detect_internet_interfaces() {
+    local -n interfaces=$1
+    local -n names=$2
+    local -n types=$3
+
+    interfaces=()
+    names=()
+    types=()
+
+    # 临时文件
+    local temp_file="/tmp/network_ports_repair_$$.txt"
+    networksetup -listallhardwareports > "$temp_file"
+
+    # 检测有线/USB网卡
+    while IFS= read -r line; do
+        if [[ "$line" =~ ^Hardware\ Port:\ (.+)$ ]]; then
+            local port_name="${BASH_REMATCH[1]}"
+            if [[ ! "$port_name" =~ (Wi-Fi|Bluetooth|雷雳网桥|Thunderbolt Bridge|Thunderbolt [0-9]) ]]; then
+                read -r device_line
+                if [[ "$device_line" =~ Device:\ (.+)$ ]]; then
+                    local device="${BASH_REMATCH[1]}"
+                    if ifconfig "$device" 2>/dev/null | grep -q "status: active"; then
+                        if ifconfig "$device" 2>/dev/null | grep "inet " | grep -v "169.254" >/dev/null; then
+                            interfaces+=("$device")
+                            names+=("$port_name")
+                            types+=("有线/USB")
+                        fi
+                    fi
+                fi
+            fi
+        fi
+    done < "$temp_file"
+
+    # 检测WiFi
+    local wifi_interface=$(networksetup -listallhardwareports | awk '/Wi-Fi/{getline; print $2}')
+    if [[ -n "$wifi_interface" ]]; then
+        if ifconfig "$wifi_interface" 2>/dev/null | grep -q "status: active"; then
+            if ifconfig "$wifi_interface" 2>/dev/null | grep "inet " | grep -v "169.254" >/dev/null; then
+                interfaces+=("$wifi_interface")
+                names+=("Wi-Fi")
+                types+=("无线")
+            fi
+        fi
+    fi
+
+    rm -f "$temp_file"
 }
 
 # 检查桥接接口状态
@@ -353,6 +453,103 @@ check_ip_forwarding() {
     return 1
 }
 
+# 重建NAT规则文件（支持多接口）
+rebuild_nat_rules() {
+    local -a inet_interfaces
+    local -a inet_names
+    local -a inet_types
+
+    detect_internet_interfaces inet_interfaces inet_names inet_types
+
+    if [[ ${#inet_interfaces[@]} -eq 0 ]]; then
+        log_message "错误: 未检测到可用的互联网接口"
+        return 1
+    fi
+
+    log_message "检测到 ${#inet_interfaces[@]} 个互联网接口，重建NAT规则"
+
+    local anchor_file="/etc/pf.anchors/thunderbolt_bridge"
+
+    # 创建新的NAT规则文件
+    cat > "$anchor_file" << EOFNAT
+# 雷雳桥接网络NAT规则 - 自动修复重建
+# 重建时间: $(date)
+# 共享接口数量: ${#inet_interfaces[@]}
+EOFNAT
+
+    # 添加接口信息
+    for i in "${!inet_interfaces[@]}"; do
+        echo "# 接口 $((i+1)): ${inet_interfaces[$i]} (${inet_names[$i]}, ${inet_types[$i]})" >> "$anchor_file"
+    done
+
+    cat >> "$anchor_file" << 'EOFNAT'
+
+# ========================================
+# NAT规则：为每个互联网接口创建NAT转发
+# ========================================
+EOFNAT
+
+    # 为每个接口创建NAT规则
+    for interface in "${inet_interfaces[@]}"; do
+        cat >> "$anchor_file" << EOFNAT
+# NAT规则 - $interface
+nat on $interface from 192.168.200.0/24 to any -> ($interface)
+
+EOFNAT
+    done
+
+    cat >> "$anchor_file" << 'EOFNAT'
+# ========================================
+# 流量转发规则
+# ========================================
+
+# 允许从桥接接口进入的流量
+pass in on bridge0 from 192.168.200.0/24 to any keep state
+
+EOFNAT
+
+    # 为每个接口添加流量规则
+    for interface in "${inet_interfaces[@]}"; do
+        cat >> "$anchor_file" << EOFNAT
+# 流量规则 - $interface
+pass out on $interface from 192.168.200.0/24 to any keep state
+pass in on $interface to 192.168.200.0/24 keep state
+
+EOFNAT
+    done
+
+    cat >> "$anchor_file" << 'EOFNAT'
+# ========================================
+# 桥接接口规则
+# ========================================
+
+# 允许返回流量到桥接接口
+pass out on bridge0 to 192.168.200.0/24 keep state
+
+# 允许客户端访问主机本地服务
+pass in on bridge0 from 192.168.200.0/24 to 192.168.200.1 keep state
+pass out on bridge0 from 192.168.200.1 to 192.168.200.0/24 keep state
+
+# 允许mDNS流量
+pass in on bridge0 proto udp from any to any port 5353
+pass out on bridge0 proto udp from any to any port 5353
+
+# DNS转发支持
+pass in on bridge0 proto udp from 192.168.200.0/24 to any port 53 keep state
+pass in on bridge0 proto tcp from 192.168.200.0/24 to any port 53 keep state
+
+# 允许ICMP（ping）
+pass inet proto icmp from 192.168.200.0/24 to any keep state
+pass inet proto icmp from any to 192.168.200.0/24 keep state
+
+# 允许桥接接口所有流量
+pass in on bridge0 all
+pass out on bridge0 all
+EOFNAT
+
+    return 0
+}
+
 # 修复桥接配置
 repair_bridge() {
     log_message "开始修复桥接配置"
@@ -377,16 +574,20 @@ repair_bridge() {
         log_message "修复IP转发设置"
     fi
 
-    # 修复NAT规则
+    # 修复NAT规则（支持多接口）
     if ! check_nat_rules; then
         pfctl -e 2>/dev/null
 
-        # 使用直接加载方法（与bridge_network_setup.sh相同）
-        if [[ -f "/etc/pf.anchors/thunderbolt_bridge" ]]; then
-            pfctl -f "/etc/pf.anchors/thunderbolt_bridge" 2>/dev/null
+        # 重建NAT规则文件以支持当前所有可用接口
+        if rebuild_nat_rules; then
+            # 使用直接加载方法
+            if [[ -f "/etc/pf.anchors/thunderbolt_bridge" ]]; then
+                pfctl -f "/etc/pf.anchors/thunderbolt_bridge" 2>/dev/null
+                log_message "NAT规则已重建并加载（多接口支持）"
+            fi
+        else
+            log_message "NAT规则重建失败"
         fi
-
-        log_message "修复NAT规则"
     fi
 }
 
